@@ -346,7 +346,9 @@ static void *circular_buffer_task( void *_URLContext)
 
         /* How much do we have left to the end of the buffer */
         /* Whats the minimum we can read so that we dont comletely fill the buffer */
+        asm("nop;nop;nop;");
         left = av_fifo_space(s->fifo);
+        asm("nop;nop;");
         left = FFMIN(left, s->fifo->end - s->fifo->wptr);
 
         /* No Space left, error, what do we do now */

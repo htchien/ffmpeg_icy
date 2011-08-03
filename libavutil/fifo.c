@@ -56,7 +56,17 @@ int av_fifo_size(AVFifoBuffer *f)
 
 int av_fifo_space(AVFifoBuffer *f)
 {
-    return f->end - f->buffer - av_fifo_size(f);
+    if(f == NULL)
+    {
+    asm("nop;nop;");
+    asm("nop;nop;");
+    asm("nop;nop;");
+    }
+
+    asm("nop;nop;");
+    int a = f->end - f->buffer; 
+    asm("nop;");
+    return  a - av_fifo_size(f);
 }
 
 int av_fifo_realloc2(AVFifoBuffer *f, unsigned int new_size) {
