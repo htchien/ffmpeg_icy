@@ -85,7 +85,6 @@ typedef struct {
     uint64_t  body_pos;
     uint32_t  body_size;
     uint32_t  sent_bytes;
-    uint32_t  audio_frame_count;
     svx8_compression_type   svx8_compression;
     bitmap_compression_type bitmap_compression;  ///< delta compression method used
     unsigned  bpp;          ///< bits per plane to decode (differs from bits_per_coded_sample if HAM)
@@ -313,7 +312,7 @@ static int iff_read_packet(AVFormatContext *s,
     int ret;
 
     if(iff->sent_bytes >= iff->body_size)
-        return AVERROR(EIO);
+        return AVERROR_EOF;
 
     if (st->codec->codec_type == AVMEDIA_TYPE_AUDIO) {
         ret = av_get_packet(pb, pkt, iff->body_size);
@@ -340,10 +339,10 @@ static int iff_read_packet(AVFormatContext *s,
 }
 
 AVInputFormat ff_iff_demuxer = {
-    "IFF",
-    NULL_IF_CONFIG_SMALL("IFF format"),
-    sizeof(IffDemuxContext),
-    iff_probe,
-    iff_read_header,
-    iff_read_packet,
+    .name           = "IFF",
+    .long_name      = NULL_IF_CONFIG_SMALL("IFF format"),
+    .priv_data_size = sizeof(IffDemuxContext),
+    .read_probe     = iff_probe,
+    .read_header    = iff_read_header,
+    .read_packet    = iff_read_packet,
 };

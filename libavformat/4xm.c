@@ -28,6 +28,7 @@
  */
 
 #include "libavutil/intreadwrite.h"
+#include "libavutil/intfloat_readwrite.h"
 #include "avformat.h"
 
 #define     RIFF_TAG MKTAG('R', 'I', 'F', 'F')
@@ -173,8 +174,9 @@ static int fourxm_read_header(AVFormatContext *s,
             }
             if (current_track + 1 > fourxm->track_count) {
                 fourxm->track_count = current_track + 1;
-                fourxm->tracks = av_realloc(fourxm->tracks,
-                    fourxm->track_count * sizeof(AudioTrack));
+                fourxm->tracks = av_realloc_f(fourxm->tracks,
+                                              sizeof(AudioTrack),
+                                              fourxm->track_count);
                 if (!fourxm->tracks) {
                     ret=  AVERROR(ENOMEM);
                     goto fail;
@@ -344,11 +346,11 @@ static int fourxm_read_close(AVFormatContext *s)
 }
 
 AVInputFormat ff_fourxm_demuxer = {
-    "4xm",
-    NULL_IF_CONFIG_SMALL("4X Technologies format"),
-    sizeof(FourxmDemuxContext),
-    fourxm_probe,
-    fourxm_read_header,
-    fourxm_read_packet,
-    fourxm_read_close,
+    .name           = "4xm",
+    .long_name      = NULL_IF_CONFIG_SMALL("4X Technologies format"),
+    .priv_data_size = sizeof(FourxmDemuxContext),
+    .read_probe     = fourxm_probe,
+    .read_header    = fourxm_read_header,
+    .read_packet    = fourxm_read_packet,
+    .read_close     = fourxm_read_close,
 };

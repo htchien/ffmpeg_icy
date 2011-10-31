@@ -26,6 +26,8 @@
 //#define MOV_EXPORT_ALL_METADATA
 
 #include "libavutil/intreadwrite.h"
+#include "libavutil/intfloat_readwrite.h"
+#include "libavutil/mathematics.h"
 #include "libavutil/avstring.h"
 #include "libavutil/dict.h"
 #include "avformat.h"
@@ -454,7 +456,7 @@ static int mov_read_hdlr(MOVContext *c, AVIOContext *pb, MOVAtom atom)
         st->codec->codec_type = AVMEDIA_TYPE_AUDIO;
     else if(type == MKTAG('m','1','a',' '))
         st->codec->codec_id = CODEC_ID_MP2;
-    else if(type == MKTAG('s','u','b','p'))
+    else if((type == MKTAG('s','u','b','p')) || (type == MKTAG('c','l','c','p')))
         st->codec->codec_type = AVMEDIA_TYPE_SUBTITLE;
 
     avio_rb32(pb); /* component  manufacture */
@@ -476,8 +478,7 @@ int ff_mov_read_esds(AVFormatContext *fc, AVIOContext *pb, MOVAtom atom)
     avio_rb32(pb); /* version + flags */
     ff_mp4_read_descr(fc, pb, &tag);
     if (tag == MP4ESDescrTag) {
-        avio_rb16(pb); /* ID */
-        avio_r8(pb); /* priority */
+        ff_mp4_parse_es_descr(pb, NULL);
     } else
         avio_rb16(pb); /* ID */
 
@@ -755,7 +756,8 @@ static int mov_read_enda(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 }
 
 /* FIXME modify qdm2/svq3/h264 decoders to take full atom as extradata */
-static int mov_read_extradata(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+static int mov_read_extradata(MOVContext *c, AVIOContext *pb, MOVAtom atom,
+                              enum CodecID codec_id)
 {
     AVStream *st;
     uint64_t size;
@@ -764,6 +766,10 @@ static int mov_read_extradata(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     if (c->fc->nb_streams < 1) // will happen with jp2 files
         return 0;
     st= c->fc->streams[c->fc->nb_streams-1];
+
+    if (st->codec->codec_id != codec_id)
+        return 0; /* unexpected codec_id - don't mess with extradata */
+
     size= (uint64_t)st->codec->extradata_size + atom.size + 8 + FF_INPUT_BUFFER_PADDING_SIZE;
     if(size > INT_MAX || (uint64_t)atom.size > INT_MAX)
         return -1;
@@ -777,6 +783,27 @@ static int mov_read_extradata(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     AV_WL32(       buf + 4, atom.type);
     avio_read(pb, buf + 8, atom.size);
     return 0;
+}
+
+/* wrapper functions for reading ALAC/AVS/MJPEG/MJPEG2000 extradata atoms only for those codecs */
+static int mov_read_alac(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    return mov_read_extradata(c, pb, atom, CODEC_ID_ALAC);
+}
+
+static int mov_read_avss(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    return mov_read_extradata(c, pb, atom, CODEC_ID_AVS);
+}
+
+static int mov_read_fiel(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    return mov_read_extradata(c, pb, atom, CODEC_ID_MJPEG);
+}
+
+static int mov_read_jp2h(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    return mov_read_extradata(c, pb, atom, CODEC_ID_JPEG2000);
 }
 
 static int mov_read_wave(MOVContext *c, AVIOContext *pb, MOVAtom atom)
@@ -1051,6 +1078,9 @@ int ff_mov_read_stsd_entries(MOVContext *c, AVIOContext *pb, int entries)
                     color_index = 255;
                     color_dec = 256 / (color_count - 1);
                     for (j = 0; j < color_count; j++) {
+                        if (id == CODEC_ID_CINEPAK){
+                            r = g = b = color_count - 1 - color_index;
+                        }else
                         r = g = b = color_index;
                         sc->palette[j] =
                             (r << 16) | (g << 8) | (b);
@@ -1192,7 +1222,18 @@ int ff_mov_read_stsd_entries(MOVContext *c, AVIOContext *pb, int entries)
             st->codec->width = sc->width;
             st->codec->height = sc->height;
         } else {
-            /* other codec type, just skip (rtp, mp4s, tmcd ...) */
+            if (st->codec->codec_tag == MKTAG('t','m','c','d')) {
+                int val;
+                avio_rb32(pb);       /* reserved */
+                val = avio_rb32(pb); /* flags */
+                if (val & 1)
+                    st->codec->flags2 |= CODEC_FLAG2_DROP_FRAME_TIMECODE;
+                avio_rb32(pb);
+                avio_rb32(pb);
+                st->codec->time_base.den = get_byte(pb);
+                st->codec->time_base.num = 1;
+            }
+            /* other codec type, just skip (rtp, mp4s, ...) */
             avio_skip(pb, size - (avio_tell(pb) - start_pos));
         }
         /* this will read extra atoms at the end (wave, alac, damr, avcC, SMI ...) */
@@ -1256,6 +1297,9 @@ int ff_mov_read_stsd_entries(MOVContext *c, AVIOContext *pb, int entries)
             st->codec->channels   = AV_RB8 (st->codec->extradata+21);
             st->codec->sample_rate = AV_RB32(st->codec->extradata+32);
         }
+        break;
+    case CODEC_ID_AC3:
+        st->need_parsing = AVSTREAM_PARSE_FULL;
         break;
     default:
         break;
@@ -1469,6 +1513,11 @@ static int mov_read_stts(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 
         sample_count=avio_rb32(pb);
         sample_duration = avio_rb32(pb);
+        /* sample_duration < 0 is invalid based on the spec */
+        if (sample_duration < 0) {
+            av_log(c->fc, AV_LOG_ERROR, "Invalid SampleDelta in STTS %d", sample_duration);
+            sample_duration = 1;
+        }
         sc->stts_data[i].count= sample_count;
         sc->stts_data[i].duration= sample_duration;
 
@@ -2228,7 +2277,7 @@ static int mov_read_chan(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 }
 
 static const MOVParseTableEntry mov_default_parse_table[] = {
-{ MKTAG('a','v','s','s'), mov_read_extradata },
+{ MKTAG('a','v','s','s'), mov_read_avss },
 { MKTAG('c','h','p','l'), mov_read_chpl },
 { MKTAG('c','o','6','4'), mov_read_stco },
 { MKTAG('c','t','t','s'), mov_read_ctts }, /* composition time to sample */
@@ -2237,12 +2286,12 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('e','d','t','s'), mov_read_default },
 { MKTAG('e','l','s','t'), mov_read_elst },
 { MKTAG('e','n','d','a'), mov_read_enda },
-{ MKTAG('f','i','e','l'), mov_read_extradata },
+{ MKTAG('f','i','e','l'), mov_read_fiel },
 { MKTAG('f','t','y','p'), mov_read_ftyp },
 { MKTAG('g','l','b','l'), mov_read_glbl },
 { MKTAG('h','d','l','r'), mov_read_hdlr },
 { MKTAG('i','l','s','t'), mov_read_ilst },
-{ MKTAG('j','p','2','h'), mov_read_extradata },
+{ MKTAG('j','p','2','h'), mov_read_jp2h },
 { MKTAG('m','d','a','t'), mov_read_mdat },
 { MKTAG('m','d','h','d'), mov_read_mdhd },
 { MKTAG('m','d','i','a'), mov_read_default },
@@ -2253,7 +2302,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('m','v','e','x'), mov_read_default },
 { MKTAG('m','v','h','d'), mov_read_mvhd },
 { MKTAG('S','M','I',' '), mov_read_smi }, /* Sorenson extension ??? */
-{ MKTAG('a','l','a','c'), mov_read_extradata }, /* alac specific atom */
+{ MKTAG('a','l','a','c'), mov_read_alac }, /* alac specific atom */
 { MKTAG('a','v','c','C'), mov_read_glbl },
 { MKTAG('p','a','s','p'), mov_read_pasp },
 { MKTAG('s','t','b','l'), mov_read_default },
@@ -2327,7 +2376,6 @@ static int mov_probe(AVProbeData *p)
             return score;
         }
     }
-    return score;
 }
 
 // must be done after parsing all trak because there's no order requirement
@@ -2610,8 +2658,6 @@ static int mov_read_close(AVFormatContext *s)
         av_freep(&sc->drefs);
         if (sc->pb && sc->pb != s->pb)
             avio_close(sc->pb);
-
-        av_freep(&st->codec->palctrl);
     }
 
     if (mov->dv_demux) {
@@ -2629,12 +2675,12 @@ static int mov_read_close(AVFormatContext *s)
 }
 
 AVInputFormat ff_mov_demuxer = {
-    "mov,mp4,m4a,3gp,3g2,mj2",
-    NULL_IF_CONFIG_SMALL("QuickTime/MPEG-4/Motion JPEG 2000 format"),
-    sizeof(MOVContext),
-    mov_probe,
-    mov_read_header,
-    mov_read_packet,
-    mov_read_close,
-    mov_read_seek,
+    .name           = "mov,mp4,m4a,3gp,3g2,mj2",
+    .long_name      = NULL_IF_CONFIG_SMALL("QuickTime/MPEG-4/Motion JPEG 2000 format"),
+    .priv_data_size = sizeof(MOVContext),
+    .read_probe     = mov_probe,
+    .read_header    = mov_read_header,
+    .read_packet    = mov_read_packet,
+    .read_close     = mov_read_close,
+    .read_seek      = mov_read_seek,
 };

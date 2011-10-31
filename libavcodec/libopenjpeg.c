@@ -62,7 +62,7 @@ static int libopenjpeg_decode_frame(AVCodecContext *avctx,
                                     void *data, int *data_size,
                                     AVPacket *avpkt)
 {
-    const uint8_t *buf = avpkt->data;
+    uint8_t *buf = avpkt->data;
     int buf_size = avpkt->size;
     LibOpenJPEGContext *ctx = avctx->priv_data;
     AVFrame *picture = &ctx->image, *output = data;
@@ -186,15 +186,14 @@ static av_cold int libopenjpeg_decode_close(AVCodecContext *avctx)
 
 
 AVCodec ff_libopenjpeg_decoder = {
-    "libopenjpeg",
-    AVMEDIA_TYPE_VIDEO,
-    CODEC_ID_JPEG2000,
-    sizeof(LibOpenJPEGContext),
-    libopenjpeg_decode_init,
-    NULL,
-    libopenjpeg_decode_close,
-    libopenjpeg_decode_frame,
-    CODEC_CAP_DR1,
-    .max_lowres = 5,
-    .long_name = NULL_IF_CONFIG_SMALL("OpenJPEG based JPEG 2000 decoder"),
-} ;
+    .name           = "libopenjpeg",
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = CODEC_ID_JPEG2000,
+    .priv_data_size = sizeof(LibOpenJPEGContext),
+    .init           = libopenjpeg_decode_init,
+    .close          = libopenjpeg_decode_close,
+    .decode         = libopenjpeg_decode_frame,
+    .capabilities   = CODEC_CAP_DR1,
+    .max_lowres     = 5,
+    .long_name      = NULL_IF_CONFIG_SMALL("OpenJPEG based JPEG 2000 decoder"),
+};

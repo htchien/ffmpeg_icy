@@ -117,7 +117,7 @@ avs_decode_frame(AVCodecContext * avctx,
     table = buf + (256 * vect_w * vect_h);
     if (sub_type != AVS_I_FRAME) {
         int map_size = ((318 / vect_w + 7) / 8) * (198 / vect_h);
-        init_get_bits(&change_map, table, map_size);
+        init_get_bits(&change_map, table, map_size * 8);
         table += map_size;
     }
 
@@ -153,14 +153,12 @@ static av_cold int avs_decode_init(AVCodecContext * avctx)
 }
 
 AVCodec ff_avs_decoder = {
-    "avs",
-    AVMEDIA_TYPE_VIDEO,
-    CODEC_ID_AVS,
-    sizeof(AvsContext),
-    avs_decode_init,
-    NULL,
-    NULL,
-    avs_decode_frame,
-    CODEC_CAP_DR1,
+    .name           = "avs",
+    .type           = AVMEDIA_TYPE_VIDEO,
+    .id             = CODEC_ID_AVS,
+    .priv_data_size = sizeof(AvsContext),
+    .init           = avs_decode_init,
+    .decode         = avs_decode_frame,
+    .capabilities   = CODEC_CAP_DR1,
     .long_name = NULL_IF_CONFIG_SMALL("AVS (Audio Video Standard) video"),
 };

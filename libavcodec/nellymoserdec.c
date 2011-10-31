@@ -156,6 +156,7 @@ static int decode_tag(AVCodecContext * avctx,
     const uint8_t *buf = avpkt->data;
     int buf_size = avpkt->size;
     NellyMoserDecodeContext *s = avctx->priv_data;
+    int data_max = *data_size;
     int blocks, i;
     int16_t* samples;
     *data_size = 0;
@@ -178,6 +179,8 @@ static int decode_tag(AVCodecContext * avctx,
      */
 
     for (i=0 ; i<blocks ; i++) {
+        if ((i + 1) * NELLY_SAMPLES * sizeof(int16_t) > data_max)
+            return i > 0 ? i * NELLY_BLOCK_LEN : -1;
         nelly_decode_block(s, &buf[i*NELLY_BLOCK_LEN], s->float_buf);
         s->fmt_conv.float_to_int16(&samples[i*NELLY_SAMPLES], s->float_buf, NELLY_SAMPLES);
         *data_size += NELLY_SAMPLES*sizeof(int16_t);
@@ -194,14 +197,13 @@ static av_cold int decode_end(AVCodecContext * avctx) {
 }
 
 AVCodec ff_nellymoser_decoder = {
-    "nellymoser",
-    AVMEDIA_TYPE_AUDIO,
-    CODEC_ID_NELLYMOSER,
-    sizeof(NellyMoserDecodeContext),
-    decode_init,
-    NULL,
-    decode_end,
-    decode_tag,
+    .name           = "nellymoser",
+    .type           = AVMEDIA_TYPE_AUDIO,
+    .id             = CODEC_ID_NELLYMOSER,
+    .priv_data_size = sizeof(NellyMoserDecodeContext),
+    .init           = decode_init,
+    .close          = decode_end,
+    .decode         = decode_tag,
     .long_name = NULL_IF_CONFIG_SMALL("Nellymoser Asao"),
 };
 

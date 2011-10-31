@@ -37,6 +37,7 @@
 #include "libavutil/avstring.h"
 #include "libavutil/lfg.h"
 #include "libavutil/dict.h"
+#include "libavutil/mathematics.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/opt.h"
@@ -320,6 +321,11 @@ static AVLFG random_state;
 static FILE *logfile = NULL;
 
 /* FIXME: make ffserver work with IPv6 */
+void exit_program(int ret)
+{
+    exit(ret);
+}
+
 /* resolve host with also IP address parsing */
 static int resolve_host(struct in_addr *sin_addr, const char *hostname)
 {
@@ -2116,7 +2122,7 @@ static void open_parser(AVFormatContext *s, int i)
         codec = avcodec_find_decoder(st->codec->codec_id);
         if (codec && (codec->capabilities & CODEC_CAP_PARSE_ONLY)) {
             st->codec->parse_only = 1;
-            if (avcodec_open(st->codec, codec) < 0)
+            if (avcodec_open2(st->codec, codec, NULL) < 0)
                 st->codec->parse_only = 0;
         }
     }
@@ -2127,13 +2133,12 @@ static int open_input_stream(HTTPContext *c, const char *info)
     char buf[128];
     char input_filename[1024];
     AVFormatContext *s = NULL;
-    int buf_size, i, ret;
+    int i, ret;
     int64_t stream_pos;
 
     /* find file name */
     if (c->stream->feed) {
         strcpy(input_filename, c->stream->feed->feed_filename);
-        buf_size = FFM_PACKET_SIZE;
         /* compute position (absolute time) */
         if (av_find_info_tag(buf, sizeof(buf), "date", info)) {
             if ((ret = av_parse_time(&stream_pos, buf, 0)) < 0)
@@ -2145,7 +2150,6 @@ static int open_input_stream(HTTPContext *c, const char *info)
             stream_pos = av_gettime() - c->stream->prebuffer * (int64_t)1000;
     } else {
         strcpy(input_filename, c->stream->feed_filename);
-        buf_size = 0;
         /* compute position (relative time) */
         if (av_find_info_tag(buf, sizeof(buf), "date", info)) {
             if ((ret = av_parse_time(&stream_pos, buf, 1)) < 0)
@@ -2163,7 +2167,7 @@ static int open_input_stream(HTTPContext *c, const char *info)
     }
     s->flags |= AVFMT_FLAG_GENPTS;
     c->fmt_in = s;
-    if (strcmp(s->iformat->name, "ffm") && av_find_stream_info(c->fmt_in) < 0) {
+    if (strcmp(s->iformat->name, "ffm") && avformat_find_stream_info(c->fmt_in, NULL) < 0) {
         http_log("Could not find stream info '%s'\n", input_filename);
         av_close_input_file(s);
         return -1;
@@ -3469,7 +3473,7 @@ static AVStream *add_av_stream1(FFStream *stream, AVCodecContext *codec, int cop
     if (!fst)
         return NULL;
     if (copy) {
-        fst->codec= avcodec_alloc_context();
+        fst->codec = avcodec_alloc_context3(NULL);
         memcpy(fst->codec, codec, sizeof(AVCodecContext));
         if (codec->extradata_size) {
             fst->codec->extradata = av_malloc(codec->extradata_size);
@@ -3509,7 +3513,7 @@ static int add_av_stream(FFStream *feed, AVStream *st)
             case AVMEDIA_TYPE_AUDIO:
                 if (av1->channels == av->channels &&
                     av1->sample_rate == av->sample_rate)
-                    goto found;
+                    return i;
                 break;
             case AVMEDIA_TYPE_VIDEO:
                 if (av1->width == av->width &&
@@ -3517,7 +3521,7 @@ static int add_av_stream(FFStream *feed, AVStream *st)
                     av1->time_base.den == av->time_base.den &&
                     av1->time_base.num == av->time_base.num &&
                     av1->gop_size == av->gop_size)
-                    goto found;
+                    return i;
                 break;
             default:
                 abort();
@@ -3529,8 +3533,6 @@ static int add_av_stream(FFStream *feed, AVStream *st)
     if (!fst)
         return -1;
     return feed->nb_streams - 1;
- found:
-    return i;
 }
 
 static void remove_stream(FFStream *stream)
@@ -3624,7 +3626,7 @@ static void build_file_streams(void)
             } else {
                 /* find all the AVStreams inside and reference them in
                    'stream' */
-                if (av_find_stream_info(infile) < 0) {
+                if (avformat_find_stream_info(infile, NULL) < 0) {
                     http_log("Could not find codec parameters from '%s'\n",
                              stream->feed_filename);
                     av_close_input_file(infile);
@@ -3651,21 +3653,13 @@ static void build_feed_streams(void)
     for(stream = first_stream; stream != NULL; stream = stream->next) {
         feed = stream->feed;
         if (feed) {
-            if (!stream->is_feed) {
-                /* we handle a stream coming from a feed */
-                for(i=0;i<stream->nb_streams;i++)
-                    stream->feed_streams[i] = add_av_stream(feed, stream->streams[i]);
-            }
-        }
-    }
-
-    /* gather all streams */
-    for(stream = first_stream; stream != NULL; stream = stream->next) {
-        feed = stream->feed;
-        if (feed) {
             if (stream->is_feed) {
                 for(i=0;i<stream->nb_streams;i++)
                     stream->feed_streams[i] = i;
+            } else {
+                /* we handle a stream coming from a feed */
+                for(i=0;i<stream->nb_streams;i++)
+                    stream->feed_streams[i] = add_av_stream(feed, stream->streams[i]);
             }
         }
     }
@@ -3886,7 +3880,7 @@ static void add_codec(FFStream *stream, AVCodecContext *av)
     st = av_mallocz(sizeof(AVStream));
     if (!st)
         return;
-    st->codec = avcodec_alloc_context();
+    st->codec = avcodec_alloc_context3(NULL);
     stream->streams[stream->nb_streams++] = st;
     memcpy(st->codec, av, sizeof(AVCodecContext));
 }
@@ -4654,12 +4648,13 @@ static void opt_debug(void)
     logfilename[0] = '-';
 }
 
-static void show_help(void)
+static int opt_help(const char *opt, const char *arg)
 {
     printf("usage: ffserver [options]\n"
            "Hyper fast multi format Audio/Video streaming server\n");
     printf("\n");
     show_help_options(options, "Main options:\n", 0, 0);
+    return 0;
 }
 
 static const OptionDef options[] = {
@@ -4674,6 +4669,7 @@ int main(int argc, char **argv)
 {
     struct sigaction sigact;
 
+    parse_loglevel(argc, argv, options);
     av_register_all();
 
     show_banner();
@@ -4682,7 +4678,7 @@ int main(int argc, char **argv)
     my_program_dir = getcwd(0, 0);
     ffserver_daemon = 1;
 
-    parse_options(argc, argv, options, NULL);
+    parse_options(NULL, argc, argv, options, NULL);
 
     unsetenv("http_proxy");             /* Kill the http_proxy */
 

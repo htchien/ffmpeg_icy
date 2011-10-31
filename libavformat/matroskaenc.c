@@ -28,6 +28,8 @@
 #include "avlanguage.h"
 #include "libavutil/samplefmt.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/intfloat_readwrite.h"
+#include "libavutil/mathematics.h"
 #include "libavutil/random_seed.h"
 #include "libavutil/lfg.h"
 #include "libavutil/dict.h"
@@ -89,6 +91,8 @@ typedef struct MatroskaMuxContext {
 
     unsigned int    audio_buffer_size;
     AVPacket        cur_audio_pkt;
+
+    int have_attachments;
 } MatroskaMuxContext;
 
 
@@ -526,6 +530,11 @@ static int mkv_write_tracks(AVFormatContext *s)
         int output_sample_rate = 0;
         AVDictionaryEntry *tag;
 
+        if (codec->codec_type == AVMEDIA_TYPE_ATTACHMENT) {
+            mkv->have_attachments = 1;
+            continue;
+        }
+
         if (!bit_depth)
             bit_depth = av_get_bytes_per_sample(codec->sample_fmt) << 3;
 
@@ -802,6 +811,68 @@ static int mkv_write_tags(AVFormatContext *s)
     return 0;
 }
 
+static int mkv_write_attachments(AVFormatContext *s)
+{
+    MatroskaMuxContext *mkv = s->priv_data;
+    AVIOContext *pb = s->pb;
+    ebml_master attachments;
+    AVLFG c;
+    int i, ret;
+
+    if (!mkv->have_attachments)
+        return 0;
+
+    av_lfg_init(&c, av_get_random_seed());
+
+    ret = mkv_add_seekhead_entry(mkv->main_seekhead, MATROSKA_ID_ATTACHMENTS, avio_tell(pb));
+    if (ret < 0) return ret;
+
+    attachments = start_ebml_master(pb, MATROSKA_ID_ATTACHMENTS, 0);
+
+    for (i = 0; i < s->nb_streams; i++) {
+        AVStream *st = s->streams[i];
+        ebml_master attached_file;
+        AVDictionaryEntry *t;
+        const char *mimetype = NULL;
+
+        if (st->codec->codec_type != AVMEDIA_TYPE_ATTACHMENT)
+            continue;
+
+        attached_file = start_ebml_master(pb, MATROSKA_ID_ATTACHEDFILE, 0);
+
+        if (t = av_dict_get(st->metadata, "title", NULL, 0))
+            put_ebml_string(pb, MATROSKA_ID_FILEDESC, t->value);
+        if (!(t = av_dict_get(st->metadata, "filename", NULL, 0))) {
+            av_log(s, AV_LOG_ERROR, "Attachment stream %d has no filename tag.\n", i);
+            return AVERROR(EINVAL);
+        }
+        put_ebml_string(pb, MATROSKA_ID_FILENAME, t->value);
+        if (t = av_dict_get(st->metadata, "mimetype", NULL, 0))
+            mimetype = t->value;
+        else if (st->codec->codec_id != CODEC_ID_NONE ) {
+            int i;
+            for (i = 0; ff_mkv_mime_tags[i].id != CODEC_ID_NONE; i++)
+                if (ff_mkv_mime_tags[i].id == st->codec->codec_id) {
+                    mimetype = ff_mkv_mime_tags[i].str;
+                    break;
+                }
+        }
+        if (!mimetype) {
+            av_log(s, AV_LOG_ERROR, "Attachment stream %d has no mimetype tag and "
+                                    "it cannot be deduced from the codec id.\n", i);
+            return AVERROR(EINVAL);
+        }
+
+        put_ebml_string(pb, MATROSKA_ID_FILEMIMETYPE, mimetype);
+        put_ebml_binary(pb, MATROSKA_ID_FILEDATA, st->codec->extradata, st->codec->extradata_size);
+        put_ebml_uint(pb, MATROSKA_ID_FILEUID, av_lfg_get(&c));
+        end_ebml_master(pb, attached_file);
+    }
+    end_ebml_master(pb, attachments);
+
+    return 0;
+}
+
 static int mkv_write_header(AVFormatContext *s)
 {
     MatroskaMuxContext *mkv = s->priv_data;
@@ -875,6 +946,9 @@ static int mkv_write_header(AVFormatContext *s)
 
         ret = mkv_write_tags(s);
         if (ret < 0) return ret;
+
+        ret = mkv_write_attachments(s);
+        if (ret < 0) return ret;
     }
 
     if (!s->pb->seekable)
@@ -937,7 +1011,7 @@ static int mkv_write_ass_blocks(AVFormatContext *s, AVIOContext *pb, AVPacket *p
         size -= start - data;
         sscanf(data, "Dialogue: %d,", &layer);
         i = snprintf(buffer, sizeof(buffer), "%"PRId64",%d,",
-                     s->streams[pkt->stream_index]->nb_frames++, layer);
+                     s->streams[pkt->stream_index]->nb_frames, layer);
         size = FFMIN(i+size, sizeof(buffer));
         memcpy(buffer+i, start, size-i);
 
@@ -1196,53 +1270,80 @@ static int mkv_write_trailer(AVFormatContext *s)
     return 0;
 }
 
+static int mkv_query_codec(enum CodecID codec_id, int std_compliance)
+{
+    int i;
+    for (i = 0; ff_mkv_codec_tags[i].id != CODEC_ID_NONE; i++)
+        if (ff_mkv_codec_tags[i].id == codec_id)
+            return 1;
+
+    if (std_compliance < FF_COMPLIANCE_NORMAL) {                // mkv theoretically supports any
+        enum AVMediaType type = avcodec_get_type(codec_id);     // video/audio through VFW/ACM
+        if (type == AVMEDIA_TYPE_VIDEO || type == AVMEDIA_TYPE_AUDIO)
+            return 1;
+    }
+
+    return 0;
+}
+
 #if CONFIG_MATROSKA_MUXER
 AVOutputFormat ff_matroska_muxer = {
-    "matroska",
-    NULL_IF_CONFIG_SMALL("Matroska file format"),
-    "video/x-matroska",
-    "mkv",
-    sizeof(MatroskaMuxContext),
-    CODEC_ID_MP2,
-    CODEC_ID_MPEG4,
-    mkv_write_header,
-    mkv_write_packet,
-    mkv_write_trailer,
-    .flags = AVFMT_GLOBALHEADER | AVFMT_VARIABLE_FPS,
-    .codec_tag = (const AVCodecTag* const []){ff_codec_bmp_tags, ff_codec_wav_tags, 0},
-    .subtitle_codec = CODEC_ID_TEXT,
+    .name              = "matroska",
+    .long_name         = NULL_IF_CONFIG_SMALL("Matroska file format"),
+    .mime_type         = "video/x-matroska",
+    .extensions        = "mkv",
+    .priv_data_size    = sizeof(MatroskaMuxContext),
+#if CONFIG_LIBVORBIS_ENCODER
+    .audio_codec       = CODEC_ID_VORBIS,
+#else
+    .audio_codec       = CODEC_ID_AC3,
+#endif
+#if CONFIG_LIBX264_ENCODER
+    .video_codec       = CODEC_ID_H264,
+#else
+    .video_codec       = CODEC_ID_MPEG4,
+#endif
+    .write_header      = mkv_write_header,
+    .write_packet      = mkv_write_packet,
+    .write_trailer     = mkv_write_trailer,
+    .flags             = AVFMT_GLOBALHEADER | AVFMT_VARIABLE_FPS,
+    .subtitle_codec    = CODEC_ID_SSA,
+    .query_codec       = mkv_query_codec,
 };
 #endif
 
 #if CONFIG_WEBM_MUXER
 AVOutputFormat ff_webm_muxer = {
-    "webm",
-    NULL_IF_CONFIG_SMALL("WebM file format"),
-    "video/webm",
-    "webm",
-    sizeof(MatroskaMuxContext),
-    CODEC_ID_VORBIS,
-    CODEC_ID_VP8,
-    mkv_write_header,
-    mkv_write_packet,
-    mkv_write_trailer,
+    .name              = "webm",
+    .long_name         = NULL_IF_CONFIG_SMALL("WebM file format"),
+    .mime_type         = "video/webm",
+    .extensions        = "webm",
+    .priv_data_size    = sizeof(MatroskaMuxContext),
+    .audio_codec       = CODEC_ID_VORBIS,
+    .video_codec       = CODEC_ID_VP8,
+    .write_header      = mkv_write_header,
+    .write_packet      = mkv_write_packet,
+    .write_trailer     = mkv_write_trailer,
     .flags = AVFMT_GLOBALHEADER | AVFMT_VARIABLE_FPS | AVFMT_TS_NONSTRICT,
 };
 #endif
 
 #if CONFIG_MATROSKA_AUDIO_MUXER
 AVOutputFormat ff_matroska_audio_muxer = {
-    "matroska",
-    NULL_IF_CONFIG_SMALL("Matroska file format"),
-    "audio/x-matroska",
-    "mka",
-    sizeof(MatroskaMuxContext),
-    CODEC_ID_MP2,
-    CODEC_ID_NONE,
-    mkv_write_header,
-    mkv_write_packet,
-    mkv_write_trailer,
+    .name              = "matroska",
+    .long_name         = NULL_IF_CONFIG_SMALL("Matroska file format"),
+    .mime_type         = "audio/x-matroska",
+    .extensions        = "mka",
+    .priv_data_size    = sizeof(MatroskaMuxContext),
+#if CONFIG_LIBVORBIS_ENCODER
+    .audio_codec       = CODEC_ID_VORBIS,
+#else
+    .audio_codec       = CODEC_ID_AC3,
+#endif
+    .video_codec       = CODEC_ID_NONE,
+    .write_header      = mkv_write_header,
+    .write_packet      = mkv_write_packet,
+    .write_trailer     = mkv_write_trailer,
     .flags = AVFMT_GLOBALHEADER,
-    .codec_tag = (const AVCodecTag* const []){ff_codec_wav_tags, 0},
 };
 #endif

@@ -898,6 +898,9 @@ static void qmf_32_subbands(DCAContext * s, int chans,
     else                        /* Perfect reconstruction */
         prCoeff = fir_32bands_perfect;
 
+    for (i = sb_act; i < 32; i++)
+        s->raXin[i] = 0.0;
+
     /* Reconstructed channel sample index */
     for (subindex = 0; subindex < 8; subindex++) {
         /* Load in one sample from each subband and clear inactive subbands */
@@ -905,8 +908,6 @@ static void qmf_32_subbands(DCAContext * s, int chans,
             uint32_t v = AV_RN32A(&samples_in[i][subindex]) ^ ((i-1)&2)<<30;
             AV_WN32A(&s->raXin[i], v);
         }
-        for (; i < 32; i++)
-            s->raXin[i] = 0.0;
 
         s->synth.synth_filter_float(&s->imdct,
                               s->subband_fir_hist[chans], &s->hist_index[chans],
@@ -1316,7 +1317,7 @@ static int dca_convert_bitstream(const uint8_t * src, int src_size, uint8_t * ds
     PutBitContext pb;
 
     if ((unsigned)src_size > (unsigned)max_size) {
-//        av_log(NULL, AV_LOG_ERROR, "Input frame size larger then DCA_MAX_FRAME_SIZE!\n");
+//        av_log(NULL, AV_LOG_ERROR, "Input frame size larger than DCA_MAX_FRAME_SIZE!\n");
 //        return -1;
         src_size = max_size;
     }
@@ -1650,6 +1651,7 @@ static int dca_decode_frame(AVCodecContext * avctx,
     //set AVCodec values with parsed data
     avctx->sample_rate = s->sample_rate;
     avctx->bit_rate = s->bit_rate;
+    avctx->frame_size = s->sample_blocks * 32;
 
     s->profile = FF_PROFILE_DTS;
 
@@ -1832,11 +1834,8 @@ static int dca_decode_frame(AVCodecContext * avctx,
             float* back_chan = s->samples + s->channel_order_tab[s->xch_base_channel] * 256;
             float* lt_chan   = s->samples + s->channel_order_tab[s->xch_base_channel - 2] * 256;
             float* rt_chan   = s->samples + s->channel_order_tab[s->xch_base_channel - 1] * 256;
-            int j;
-            for(j = 0; j < 256; ++j) {
-                lt_chan[j] -= back_chan[j] * M_SQRT1_2;
-                rt_chan[j] -= back_chan[j] * M_SQRT1_2;
-            }
+            s->dsp.vector_fmac_scalar(lt_chan, back_chan, -M_SQRT1_2, 256);
+            s->dsp.vector_fmac_scalar(rt_chan, back_chan, -M_SQRT1_2, 256);
         }
 
         if (avctx->sample_fmt == AV_SAMPLE_FMT_FLT) {

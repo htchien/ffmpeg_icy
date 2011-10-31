@@ -340,7 +340,7 @@ static int rgbToRgbWrapper(SwsContext *c, const uint8_t* src[], int srcStride[],
         if ((dstFormat == PIX_FMT_RGB32_1 || dstFormat == PIX_FMT_BGR32_1) && !isRGBA32(srcFormat))
             dstPtr += ALT32_CORR;
 
-        if (dstStride[0]*srcBpp == srcStride[0]*dstBpp && srcStride[0] > 0 && !(srcStride[0]%srcBpp))
+        if (dstStride[0]*srcBpp == srcStride[0]*dstBpp && srcStride[0] > 0 && !(srcStride[0] % srcBpp))
             conv(srcPtr, dstPtr + dstStride[0]*srcSliceY, srcSliceH*srcStride[0]);
         else {
             int i;
@@ -444,6 +444,7 @@ static int planarCopyWrapper(SwsContext *c, const uint8_t* src[], int srcStride[
         int height= (plane==0 || plane==3) ? srcSliceH: -((-srcSliceH)>>c->chrDstVSubSample);
         const uint8_t *srcPtr= src[plane];
         uint8_t *dstPtr= dst[plane] + dstStride[plane]*y;
+        int shiftonly= plane==1 || plane==2 || (!c->srcRange && plane==0);
 
         if (!dst[plane]) continue;
         // ignore palette for GRAY8
@@ -469,14 +470,19 @@ static int planarCopyWrapper(SwsContext *c, const uint8_t* src[], int srcStride[
                     }
                 } else if (src_depth == 8) {
                     for (i = 0; i < height; i++) {
+                        #define COPY816(w)\
+                        if(shiftonly){\
+                            for (j = 0; j < length; j++)\
+                                w(&dstPtr2[j], srcPtr[j]<<(dst_depth-8));\
+                        }else{\
+                            for (j = 0; j < length; j++)\
+                                w(&dstPtr2[j], (srcPtr[j]<<(dst_depth-8)) |\
+                                               (srcPtr[j]>>(2*8-dst_depth)));\
+                        }
                         if(isBE(c->dstFormat)){
-                            for (j = 0; j < length; j++)
-                                AV_WB16(&dstPtr2[j], (srcPtr[j]<<(dst_depth-8)) |
-                                                     (srcPtr[j]>>(2*8-dst_depth)));
+                            COPY816(AV_WB16)
                         } else {
-                            for (j = 0; j < length; j++)
-                                AV_WL16(&dstPtr2[j], (srcPtr[j]<<(dst_depth-8)) |
-                                                     (srcPtr[j]>>(2*8-dst_depth)));
+                            COPY816(AV_WL16)
                         }
                         dstPtr2 += dstStride[plane]/2;
                         srcPtr  += srcStride[plane];
@@ -484,10 +490,17 @@ static int planarCopyWrapper(SwsContext *c, const uint8_t* src[], int srcStride[
                 } else if (src_depth <= dst_depth) {
                     for (i = 0; i < height; i++) {
 #define COPY_UP(r,w) \
-    for (j = 0; j < length; j++){ \
-        unsigned int v= r(&srcPtr2[j]);\
-        w(&dstPtr2[j], (v<<(dst_depth-src_depth)) | \
-                       (v>>(2*src_depth-dst_depth)));\
+    if(shiftonly){\
+        for (j = 0; j < length; j++){ \
+            unsigned int v= r(&srcPtr2[j]);\
+            w(&dstPtr2[j], v<<(dst_depth-src_depth));\
+        }\
+    }else{\
+        for (j = 0; j < length; j++){ \
+            unsigned int v= r(&srcPtr2[j]);\
+            w(&dstPtr2[j], (v<<(dst_depth-src_depth)) | \
+                        (v>>(2*src_depth-dst_depth)));\
+        }\
     }
                         if(isBE(c->srcFormat)){
                             if(isBE(c->dstFormat)){
@@ -686,18 +699,19 @@ static int check_image_pointers(uint8_t *data[4], enum PixelFormat pix_fmt,
  * swscale wrapper, so we don't need to export the SwsContext.
  * Assumes planar YUV to be in YUV order instead of YVU.
  */
-int sws_scale(SwsContext *c, const uint8_t* const src[], const int srcStride[], int srcSliceY,
-              int srcSliceH, uint8_t* const dst[], const int dstStride[])
+int sws_scale(struct SwsContext *c, const uint8_t* const srcSlice[],
+              const int srcStride[], int srcSliceY, int srcSliceH,
+              uint8_t* const dst[], const int dstStride[])
 {
     int i;
-    const uint8_t* src2[4]= {src[0], src[1], src[2], src[3]};
+    const uint8_t* src2[4]= {srcSlice[0], srcSlice[1], srcSlice[2], srcSlice[3]};
     uint8_t* dst2[4]= {dst[0], dst[1], dst[2], dst[3]};
 
     // do not mess up sliceDir if we have a "trailing" 0-size slice
     if (srcSliceH == 0)
         return 0;
 
-    if (!check_image_pointers(src, c->srcFormat, srcStride)) {
+    if (!check_image_pointers(srcSlice, c->srcFormat, srcStride)) {
         av_log(c, AV_LOG_ERROR, "bad src image pointers\n");
         return 0;
     }
@@ -718,7 +732,7 @@ int sws_scale(SwsContext *c, const uint8_t* const src[], const int srcStride[], 
         for (i=0; i<256; i++) {
             int p, r, g, b, y, u, v, a = 0xff;
             if(c->srcFormat == PIX_FMT_PAL8) {
-                p=((const uint32_t*)(src[1]))[i];
+                p=((const uint32_t*)(srcSlice[1]))[i];
                 a= (p>>24)&0xFF;
                 r= (p>>16)&0xFF;
                 g= (p>> 8)&0xFF;
@@ -816,14 +830,6 @@ int sws_scale(SwsContext *c, const uint8_t* const src[], const int srcStride[], 
         return c->swScale(c, src2, srcStride2, c->srcH-srcSliceY-srcSliceH, srcSliceH, dst2, dstStride2);
     }
 }
-
-#if LIBSWSCALE_VERSION_MAJOR < 1
-int sws_scale_ordered(SwsContext *c, const uint8_t* const src[], int srcStride[], int srcSliceY,
-                      int srcSliceH, uint8_t* dst[], int dstStride[])
-{
-    return sws_scale(c, src, srcStride, srcSliceY, srcSliceH, dst, dstStride);
-}
-#endif
 
 /* Convert the palette to the same packed 32-bit format as the palette */
 void sws_convertPalette8ToPacked32(const uint8_t *src, uint8_t *dst, int num_pixels, const uint8_t *palette)

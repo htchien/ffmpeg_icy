@@ -199,8 +199,8 @@ typedef struct {
     /* packet filling */
     unsigned char multi_payloads_present;
     int packet_size_left;
-    int packet_timestamp_start;
-    int packet_timestamp_end;
+    int64_t packet_timestamp_start;
+    int64_t packet_timestamp_end;
     unsigned int packet_nb_payloads;
     uint8_t packet_buf[PACKET_SIZE];
     AVIOContext pb;
@@ -684,7 +684,7 @@ static void flush_packet(AVFormatContext *s)
 static void put_payload_header(
                                 AVFormatContext *s,
                                 ASFStream       *stream,
-                                int             presentation_time,
+                                int64_t         presentation_time,
                                 int             m_obj_size,
                                 int             m_obj_offset,
                                 int             payload_len,
@@ -711,7 +711,7 @@ static void put_payload_header(
     avio_w8(pb, ASF_PAYLOAD_REPLICATED_DATA_LENGTH);
 
     avio_wl32(pb, m_obj_size);       //Replicated Data - Media Object Size
-    avio_wl32(pb, presentation_time);//Replicated Data - Presentation Time
+    avio_wl32(pb, (uint32_t) presentation_time);//Replicated Data - Presentation Time
 
     if (asf->multi_payloads_present){
         avio_wl16(pb, payload_len);   //payload length
@@ -722,7 +722,7 @@ static void put_frame(
                     AVFormatContext *s,
                     ASFStream       *stream,
                     AVStream        *avst,
-                    int             timestamp,
+                    int64_t         timestamp,
                     const uint8_t   *buf,
                     int             m_obj_size,
                     int             flags
@@ -882,20 +882,20 @@ static int asf_write_trailer(AVFormatContext *s)
 
 #if CONFIG_ASF_MUXER
 AVOutputFormat ff_asf_muxer = {
-    "asf",
-    NULL_IF_CONFIG_SMALL("ASF format"),
-    "video/x-ms-asf",
-    "asf,wmv,wma",
-    sizeof(ASFContext),
+    .name           = "asf",
+    .long_name      = NULL_IF_CONFIG_SMALL("ASF format"),
+    .mime_type      = "video/x-ms-asf",
+    .extensions     = "asf,wmv,wma",
+    .priv_data_size = sizeof(ASFContext),
 #if CONFIG_LIBMP3LAME
-    CODEC_ID_MP3,
+    .audio_codec    = CODEC_ID_MP3,
 #else
-    CODEC_ID_MP2,
+    .audio_codec    = CODEC_ID_MP2,
 #endif
-    CODEC_ID_MSMPEG4V3,
-    asf_write_header,
-    asf_write_packet,
-    asf_write_trailer,
+    .video_codec    = CODEC_ID_MSMPEG4V3,
+    .write_header   = asf_write_header,
+    .write_packet   = asf_write_packet,
+    .write_trailer  = asf_write_trailer,
     .flags = AVFMT_GLOBALHEADER,
     .codec_tag= (const AVCodecTag* const []){codec_asf_bmp_tags, ff_codec_bmp_tags, ff_codec_wav_tags, 0},
 };
@@ -903,20 +903,20 @@ AVOutputFormat ff_asf_muxer = {
 
 #if CONFIG_ASF_STREAM_MUXER
 AVOutputFormat ff_asf_stream_muxer = {
-    "asf_stream",
-    NULL_IF_CONFIG_SMALL("ASF format"),
-    "video/x-ms-asf",
-    "asf,wmv,wma",
-    sizeof(ASFContext),
+    .name           = "asf_stream",
+    .long_name      = NULL_IF_CONFIG_SMALL("ASF format"),
+    .mime_type      = "video/x-ms-asf",
+    .extensions     = "asf,wmv,wma",
+    .priv_data_size = sizeof(ASFContext),
 #if CONFIG_LIBMP3LAME
-    CODEC_ID_MP3,
+    .audio_codec    = CODEC_ID_MP3,
 #else
-    CODEC_ID_MP2,
+    .audio_codec    = CODEC_ID_MP2,
 #endif
-    CODEC_ID_MSMPEG4V3,
-    asf_write_stream_header,
-    asf_write_packet,
-    asf_write_trailer,
+    .video_codec    = CODEC_ID_MSMPEG4V3,
+    .write_header   = asf_write_stream_header,
+    .write_packet   = asf_write_packet,
+    .write_trailer  = asf_write_trailer,
     .flags = AVFMT_GLOBALHEADER,
     .codec_tag= (const AVCodecTag* const []){codec_asf_bmp_tags, ff_codec_bmp_tags, ff_codec_wav_tags, 0},
 };

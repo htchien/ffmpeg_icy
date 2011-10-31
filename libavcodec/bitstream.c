@@ -43,11 +43,7 @@ const uint8_t ff_log2_run[41]={
 
 void align_put_bits(PutBitContext *s)
 {
-#ifdef ALT_BITSTREAM_WRITER
-    put_bits(s,(  - s->index) & 7,0);
-#else
     put_bits(s,s->bit_left & 7,0);
-#endif
 }
 
 void ff_put_string(PutBitContext *pb, const char *string, int terminate_string)
@@ -109,8 +105,8 @@ static int alloc_table(VLC *vlc, int size, int use_static)
         if(use_static)
             abort(); //cant do anything, init_vlc() is used with too little memory
         vlc->table_allocated += (1 << vlc->bits);
-        vlc->table = av_realloc(vlc->table,
-                                sizeof(VLC_TYPE) * 2 * vlc->table_allocated);
+        vlc->table = av_realloc_f(vlc->table,
+                                  vlc->table_allocated, sizeof(VLC_TYPE) * 2);
         if (!vlc->table)
             return -1;
     }

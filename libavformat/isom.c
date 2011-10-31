@@ -137,11 +137,18 @@ const AVCodecTag codec_movvideo_tags[] = {
     { CODEC_ID_RAWVIDEO, MKTAG('W', 'R', 'A', 'W') },
 
     { CODEC_ID_H264, MKTAG('a', 'v', 'c', '1') }, /* AVC-1/H.264 */
-    { CODEC_ID_H264, MKTAG('a', 'i', '5', '5') }, /* AVC Intra  50 / 1080 interlace */
-    { CODEC_ID_H264, MKTAG('a', 'i', '5', 'q') }, /* AVC Intra  50 /  720 */
-    { CODEC_ID_H264, MKTAG('a', 'i', '1', '5') }, /* AVC Intra 100 / 1080 interlace */
-    { CODEC_ID_H264, MKTAG('a', 'i', '1', 'q') }, /* AVC Intra 100 /  720 */
-    { CODEC_ID_H264, MKTAG('a', 'i', '1', '2') }, /* AVC Intra 100 / 1080 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', 'p') }, /* AVC-Intra  50M 720p24/30/60 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', 'q') }, /* AVC-Intra  50M 720p25/50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', '2') }, /* AVC-Intra  50M 1080p25/50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', '3') }, /* AVC-Intra  50M 1080p24/30/60 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', '5') }, /* AVC-Intra  50M 1080i50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '5', '6') }, /* AVC-Intra  50M 1080i60 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', 'p') }, /* AVC-Intra 100M 720p24/30/60 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', 'q') }, /* AVC-Intra 100M 720p25/50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', '2') }, /* AVC-Intra 100M 1080p25/50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', '3') }, /* AVC-Intra 100M 1080p24/30/60 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', '5') }, /* AVC-Intra 100M 1080i50 */
+    { CODEC_ID_H264, MKTAG('a', 'i', '1', '6') }, /* AVC-Intra 100M 1080i60 */
 
     { CODEC_ID_MPEG1VIDEO, MKTAG('m', '1', 'v', '1') }, /* Apple MPEG-1 Camcorder */
     { CODEC_ID_MPEG1VIDEO, MKTAG('m', 'p', 'e', 'g') }, /* MPEG */
@@ -208,6 +215,9 @@ const AVCodecTag codec_movvideo_tags[] = {
     { CODEC_ID_PRORES, MKTAG('a', 'p', 'c', 'o') }, /* Apple ProRes 422 Proxy */
     { CODEC_ID_PRORES, MKTAG('a', 'p', '4', 'h') }, /* Apple ProRes 4444 */
 
+    { CODEC_ID_MSMPEG4V3, MKTAG('3', 'I', 'V', 'D') }, /* 3ivx DivX Doctor */
+    { CODEC_ID_FLV1,      MKTAG('H', '2', '6', '3') }, /* Flash Media Server */
+
     { CODEC_ID_NONE, 0 },
 };
 
@@ -246,7 +256,7 @@ const AVCodecTag codec_movaudio_tags[] = {
     { CODEC_ID_AC3, MKTAG('a', 'c', '-', '3') }, /* ETSI TS 102 366 Annex F */
     { CODEC_ID_AC3, MKTAG('s', 'a', 'c', '3') }, /* Nero Recode */
     { CODEC_ID_DTS, MKTAG('d', 't', 's', 'c') }, /* mp4ra.org */
-    { CODEC_ID_DTS, MKTAG('D', 'T', 'S', ' ') }, /* non standard */
+    { CODEC_ID_DTS, MKTAG('D', 'T', 'S', ' ') }, /* non-standard */
 
     { CODEC_ID_AMR_NB, MKTAG('s', 'a', 'm', 'r') }, /* AMR-NB 3gp */
     { CODEC_ID_AMR_WB, MKTAG('s', 'a', 'w', 'b') }, /* AMR-WB 3gp */
@@ -254,12 +264,16 @@ const AVCodecTag codec_movaudio_tags[] = {
     { CODEC_ID_GSM,  MKTAG('a', 'g', 's', 'm') },
     { CODEC_ID_ALAC, MKTAG('a', 'l', 'a', 'c') }, /* Apple Lossless */
 
+    { CODEC_ID_NELLYMOSER, MKTAG('n', 'm', 'o', 's') }, /* Flash Media Server */
+
     { CODEC_ID_QCELP, MKTAG('Q','c','l','p') },
     { CODEC_ID_QCELP, MKTAG('Q','c','l','q') },
     { CODEC_ID_QCELP, MKTAG('s','q','c','p') }, /* ISO Media fourcc */
 
     { CODEC_ID_QDMC, MKTAG('Q', 'D', 'M', 'C') }, /* QDMC */
     { CODEC_ID_QDM2, MKTAG('Q', 'D', 'M', '2') }, /* QDM2 */
+
+    { CODEC_ID_SPEEX, MKTAG('s','p','e','x') }, /* Flash Media Server */
 
     { CODEC_ID_DVAUDIO, MKTAG('v', 'd', 'v', 'a') },
     { CODEC_ID_DVAUDIO, MKTAG('d', 'v', 'c', 'a') },
@@ -372,6 +386,22 @@ int ff_mp4_read_descr(AVFormatContext *fc, AVIOContext *pb, int *tag)
     return len;
 }
 
+void ff_mp4_parse_es_descr(AVIOContext *pb, int *es_id)
+{
+     int flags;
+     if (es_id) *es_id = avio_rb16(pb);
+     else                avio_rb16(pb);
+     flags = avio_r8(pb);
+     if (flags & 0x80) //streamDependenceFlag
+         avio_rb16(pb);
+     if (flags & 0x40) { //URL_Flag
+         int len = avio_r8(pb);
+         avio_skip(pb, len);
+     }
+     if (flags & 0x20) //OCRstreamFlag
+         avio_rb16(pb);
+}
+
 static const AVCodecTag mp4_audio_types[] = {
     { CODEC_ID_MP3ON4, AOT_PS   }, /* old mp3on4 draft */
     { CODEC_ID_MP3ON4, AOT_L1   }, /* layer 1 */
@@ -395,7 +425,7 @@ int ff_mp4_read_dec_config_descr(AVFormatContext *fc, AVStream *st, AVIOContext 
     len = ff_mp4_read_descr(fc, pb, &tag);
     if (tag == MP4DecSpecificDescrTag) {
         av_dlog(fc, "Specific MPEG4 header len=%d\n", len);
-        if((uint64_t)len > (1<<30))
+        if (!len || (uint64_t)len > (1<<30))
             return -1;
         av_free(st->codec->extradata);
         st->codec->extradata = av_mallocz(len + FF_INPUT_BUFFER_PADDING_SIZE);

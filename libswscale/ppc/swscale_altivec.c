@@ -92,27 +92,23 @@ altivec_packIntArrayToCharArray(int *val, uint8_t* dest, int dstW)
     }
 }
 
+//FIXME remove the usage of scratch buffers.
 static void
 yuv2yuvX_altivec_real(SwsContext *c,
                       const int16_t *lumFilter, const int16_t **lumSrc,
                       int lumFilterSize, const int16_t *chrFilter,
                       const int16_t **chrUSrc, const int16_t **chrVSrc,
                       int chrFilterSize, const int16_t **alpSrc,
-                      uint8_t *dest, uint8_t *uDest,
-                      uint8_t *vDest, uint8_t *aDest,
-                      int dstW, int chrDstW)
+                      uint8_t *dest[4], int dstW, int chrDstW)
 {
-    const vector signed int vini = {(1 << 18), (1 << 18), (1 << 18), (1 << 18)};
+    uint8_t *yDest = dest[0], *uDest = dest[1], *vDest = dest[2];
+    const uint8_t *lumDither = c->lumDither8, *chrDither = c->chrDither8;
     register int i, j;
     {
         DECLARE_ALIGNED(16, int, val)[dstW];
 
-        for (i = 0; i < (dstW -7); i+=4) {
-            vec_st(vini, i << 2, val);
-        }
-        for (; i < dstW; i++) {
-            val[i] = (1 << 18);
-        }
+        for (i=0; i<dstW; i++)
+            val[i] = lumDither[i & 7] << 12;
 
         for (j = 0; j < lumFilterSize; j++) {
             vector signed short l1, vLumFilter = vec_ld(j << 1, lumFilter);
@@ -150,19 +146,15 @@ yuv2yuvX_altivec_real(SwsContext *c,
                 val[i] += lumSrc[j][i] * lumFilter[j];
             }
         }
-        altivec_packIntArrayToCharArray(val, dest, dstW);
+        altivec_packIntArrayToCharArray(val, yDest, dstW);
     }
     if (uDest != 0) {
         DECLARE_ALIGNED(16, int, u)[chrDstW];
         DECLARE_ALIGNED(16, int, v)[chrDstW];
 
-        for (i = 0; i < (chrDstW -7); i+=4) {
-            vec_st(vini, i << 2, u);
-            vec_st(vini, i << 2, v);
-        }
-        for (; i < chrDstW; i++) {
-            u[i] = (1 << 18);
-            v[i] = (1 << 18);
+        for (i=0; i<chrDstW; i++) {
+            u[i] = chrDither[i & 7] << 12;
+            v[i] = chrDither[(i + 3) & 7] << 12;
         }
 
         for (j = 0; j < chrFilterSize; j++) {
@@ -221,9 +213,8 @@ yuv2yuvX_altivec_real(SwsContext *c,
     }
 }
 
-static void hScale_altivec_real(int16_t *dst, int dstW,
-                                const uint8_t *src, int srcW,
-                                int xInc, const int16_t *filter,
+static void hScale_altivec_real(SwsContext *c, int16_t *dst, int dstW,
+                                const uint8_t *src, const int16_t *filter,
                                 const int16_t *filterPos, int filterSize)
 {
     register int i;
@@ -251,7 +242,7 @@ static void hScale_altivec_real(int16_t *dst, int dstW,
         vector unsigned char src_v1, src_vF;
         vector signed short src_v, filter_v;
         vector signed int val_vEven, val_s;
-        if ((((int)src + srcPos)% 16) > 12) {
+        if ((((uintptr_t)src + srcPos) % 16) > 12) {
             src_v1 = vec_ld(srcPos + 16, src);
         }
         src_vF = vec_perm(src_v0, src_v1, vec_lvsl(srcPos, src));
@@ -290,7 +281,7 @@ static void hScale_altivec_real(int16_t *dst, int dstW,
         vector unsigned char src_v1, src_vF;
         vector signed short src_v, filter_v;
         vector signed int val_v, val_s;
-        if ((((int)src + srcPos)% 16) > 8) {
+        if ((((uintptr_t)src + srcPos) % 16) > 8) {
             src_v1 = vec_ld(srcPos + 16, src);
         }
         src_vF = vec_perm(src_v0, src_v1, vec_lvsl(srcPos, src));
@@ -376,7 +367,7 @@ static void hScale_altivec_real(int16_t *dst, int dstW,
             //vector unsigned char src_v0 = vec_ld(srcPos + j, src);
             vector unsigned char src_v1, src_vF;
             vector signed short src_v, filter_v1R, filter_v;
-            if ((((int)src + srcPos)% 16) > 8) {
+            if ((((uintptr_t)src + srcPos) % 16) > 8) {
                 src_v1 = vec_ld(srcPos + j + 16, src);
             }
             src_vF = vec_perm(src_v0, src_v1, permS);
@@ -408,17 +399,25 @@ void ff_sws_init_swScale_altivec(SwsContext *c)
     if (!(av_get_cpu_flags() & AV_CPU_FLAG_ALTIVEC))
         return;
 
-    c->hScale       = hScale_altivec_real;
-    if (!is16BPS(dstFormat) && !is9_OR_10BPS(dstFormat)) {
+    if (c->srcBpc == 8 && c->dstBpc <= 10) {
+        c->hyScale = c->hcScale = hScale_altivec_real;
+    }
+    if (!is16BPS(dstFormat) && !is9_OR_10BPS(dstFormat) &&
+        dstFormat != PIX_FMT_NV12 && dstFormat != PIX_FMT_NV21 &&
+        !c->alpPixBuf) {
         c->yuv2yuvX     = yuv2yuvX_altivec_real;
     }
 
     /* The following list of supported dstFormat values should
      * match what's found in the body of ff_yuv2packedX_altivec() */
-    if (!(c->flags & (SWS_BITEXACT | SWS_FULL_CHR_H_INT)) && !c->alpPixBuf &&
-        (c->dstFormat==PIX_FMT_ABGR  || c->dstFormat==PIX_FMT_BGRA  ||
-         c->dstFormat==PIX_FMT_BGR24 || c->dstFormat==PIX_FMT_RGB24 ||
-         c->dstFormat==PIX_FMT_RGBA  || c->dstFormat==PIX_FMT_ARGB)) {
-            c->yuv2packedX  = ff_yuv2packedX_altivec;
+    if (!(c->flags & (SWS_BITEXACT | SWS_FULL_CHR_H_INT)) && !c->alpPixBuf) {
+        switch (c->dstFormat) {
+        case PIX_FMT_ABGR:  c->yuv2packedX = ff_yuv2abgr_X_altivec;  break;
+        case PIX_FMT_BGRA:  c->yuv2packedX = ff_yuv2bgra_X_altivec;  break;
+        case PIX_FMT_ARGB:  c->yuv2packedX = ff_yuv2argb_X_altivec;  break;
+        case PIX_FMT_RGBA:  c->yuv2packedX = ff_yuv2rgba_X_altivec;  break;
+        case PIX_FMT_BGR24: c->yuv2packedX = ff_yuv2bgr24_X_altivec; break;
+        case PIX_FMT_RGB24: c->yuv2packedX = ff_yuv2rgb24_X_altivec; break;
         }
+    }
 }

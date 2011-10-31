@@ -97,7 +97,7 @@ found:
     return i-(state&5);
 }
 
-/*!
+/**
  * Parse NAL units of found picture and decode some basic information.
  *
  * @param s parser context.
@@ -251,7 +251,13 @@ static int h264_parse(AVCodecParserContext *s,
         h->got_first = 1;
         if (avctx->extradata_size) {
             h->s.avctx = avctx;
-            ff_h264_decode_extradata(h);
+            // must be done like in decoder, otherwise opening the parser,
+            // letting it create extradata and then closing and opening again
+            // will cause has_b_frames to be always set.
+            // Note that estimate_timings_from_pts does exactly this.
+            if (!avctx->has_b_frames)
+                h->s.low_delay = 1;
+            ff_h264_decode_extradata(h, avctx->extradata, avctx->extradata_size);
         }
     }
 

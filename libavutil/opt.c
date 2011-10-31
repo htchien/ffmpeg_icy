@@ -30,6 +30,7 @@
 #include "opt.h"
 #include "eval.h"
 #include "dict.h"
+#include "log.h"
 
 #if FF_API_FIND_OPT
 //FIXME order them and do a bin search
@@ -58,7 +59,7 @@ static int av_set_number2(void *obj, const char *name, double num, int den, int6
     void *dst;
     if (o_out)
         *o_out= o;
-    if (!o || o->offset<=0)
+    if (!o)
         return AVERROR_OPTION_NOT_FOUND;
 
     if (o->max*den < num*intnum || o->min*den > num*intnum) {
@@ -122,7 +123,7 @@ int av_set_string3(void *obj, const char *name, const char *val, int alloc, cons
         *o_out = o;
     if (!o)
         return AVERROR_OPTION_NOT_FOUND;
-    if ((!val && o->type != FF_OPT_TYPE_STRING) || o->offset<=0)
+    if (!val && o->type != FF_OPT_TYPE_STRING)
         return AVERROR(EINVAL);
 
     if (o->type == FF_OPT_TYPE_BINARY) {
@@ -195,7 +196,6 @@ int av_set_string3(void *obj, const char *name, const char *val, int alloc, cons
                 return 0;
             notfirst=1;
         }
-        return AVERROR(EINVAL);
     }
 
     if (alloc) {
@@ -229,11 +229,11 @@ const AVOption *av_set_int(void *obj, const char *name, int64_t n)
  */
 const char *av_get_string(void *obj, const char *name, const AVOption **o_out, char *buf, int buf_len)
 {
-    const AVOption *o = av_opt_find(obj, name, NULL, 0, 0);
+    const AVOption *o = av_opt_find(obj, name, NULL, 0, AV_OPT_SEARCH_CHILDREN);
     void *dst;
     uint8_t *bin;
     int len, i;
-    if (!o || o->offset<=0)
+    if (!o)
         return NULL;
     if (o->type != FF_OPT_TYPE_STRING && (!buf || !buf_len))
         return NULL;
@@ -260,9 +260,9 @@ const char *av_get_string(void *obj, const char *name, const AVOption **o_out, c
     return buf;
 }
 
-static int av_get_number(void *obj, const char *name, const AVOption **o_out, double *num, int *den, int64_t *intnum)
+static int get_number(void *obj, const char *name, const AVOption **o_out, double *num, int *den, int64_t *intnum)
 {
-    const AVOption *o = av_opt_find(obj, name, NULL, 0, 0);
+    const AVOption *o = av_opt_find(obj, name, NULL, 0, AV_OPT_SEARCH_CHILDREN);
     void *dst;
     if (!o || (o->offset<=0 && o->type != FF_OPT_TYPE_CONST))
         goto error;
@@ -293,7 +293,7 @@ double av_get_double(void *obj, const char *name, const AVOption **o_out)
     double num=1;
     int den=1;
 
-    if (av_get_number(obj, name, o_out, &num, &den, &intnum) < 0)
+    if (get_number(obj, name, o_out, &num, &den, &intnum) < 0)
         return NAN;
     return num*intnum/den;
 }
@@ -304,7 +304,7 @@ AVRational av_get_q(void *obj, const char *name, const AVOption **o_out)
     double num=1;
     int den=1;
 
-    if (av_get_number(obj, name, o_out, &num, &den, &intnum) < 0)
+    if (get_number(obj, name, o_out, &num, &den, &intnum) < 0)
         return (AVRational){0, 0};
     if (num == 1.0 && (int)intnum == intnum)
         return (AVRational){intnum, den};
@@ -318,7 +318,7 @@ int64_t av_get_int(void *obj, const char *name, const AVOption **o_out)
     double num=1;
     int den=1;
 
-    if (av_get_number(obj, name, o_out, &num, &den, &intnum) < 0)
+    if (get_number(obj, name, o_out, &num, &den, &intnum) < 0)
         return -1;
     return num*intnum/den;
 }
@@ -414,18 +414,21 @@ int av_opt_show2(void *obj, void *av_log_obj, int req_flags, int rej_flags)
     return 0;
 }
 
-/** Set the values of the AVCodecContext or AVFormatContext structure.
- * They are set to the defaults specified in the according AVOption options
- * array default_val field.
- *
- * @param s AVCodecContext or AVFormatContext for which the defaults will be set
- */
+void av_opt_set_defaults(void *s)
+{
+#if FF_API_OLD_AVOPTIONS
+    av_opt_set_defaults2(s, 0, 0);
+}
+
 void av_opt_set_defaults2(void *s, int mask, int flags)
 {
+#endif
     const AVOption *opt = NULL;
     while ((opt = av_next_option(s, opt)) != NULL) {
+#if FF_API_OLD_AVOPTIONS
         if ((opt->flags & mask) != flags)
             continue;
+#endif
         switch (opt->type) {
             case FF_OPT_TYPE_CONST:
                 /* Nothing to be done here */
@@ -465,11 +468,6 @@ void av_opt_set_defaults2(void *s, int mask, int flags)
                 av_log(s, AV_LOG_DEBUG, "AVOption type %d of option %s not implemented yet\n", opt->type, opt->name);
         }
     }
-}
-
-void av_opt_set_defaults(void *s)
-{
-    av_opt_set_defaults2(s, 0, 0);
 }
 
 /**
@@ -575,8 +573,9 @@ const AVOption *av_opt_find(void *obj, const char *name, const char *unit,
         return o;
 
     while (o = av_next_option(obj, o)) {
-        if (!strcmp(o->name, name) && (!unit || (o->unit && !strcmp(o->unit, unit))) &&
-            (o->flags & opt_flags) == opt_flags)
+        if (!strcmp(o->name, name) && (o->flags & opt_flags) == opt_flags &&
+            ((!unit && o->type != FF_OPT_TYPE_CONST) ||
+             (unit  && o->type == FF_OPT_TYPE_CONST && o->unit && !strcmp(o->unit, unit))))
             return o;
     }
     return NULL;
@@ -603,14 +602,14 @@ typedef struct TestContext
 #define TEST_FLAG_MU   04
 
 static const AVOption test_options[]= {
-{"num",      "set num",        OFFSET(num),      FF_OPT_TYPE_INT,      0,              0,        100                 },
-{"toggle",   "set toggle",     OFFSET(toggle),   FF_OPT_TYPE_INT,      0,              0,        1                   },
-{"rational", "set rational",   OFFSET(rational), FF_OPT_TYPE_RATIONAL, 0,              0,        10                  },
-{"string",   "set string",     OFFSET(string),   FF_OPT_TYPE_STRING,   0,              CHAR_MIN, CHAR_MAX            },
-{"flags",    "set flags",      OFFSET(flags),    FF_OPT_TYPE_FLAGS,    0,              0,        INT_MAX, 0, "flags" },
-{"cool",     "set cool flag ", 0,                FF_OPT_TYPE_CONST,    TEST_FLAG_COOL, INT_MIN,  INT_MAX, 0, "flags" },
-{"lame",     "set lame flag ", 0,                FF_OPT_TYPE_CONST,    TEST_FLAG_LAME, INT_MIN,  INT_MAX, 0, "flags" },
-{"mu",       "set mu flag ",   0,                FF_OPT_TYPE_CONST,    TEST_FLAG_MU,   INT_MIN,  INT_MAX, 0, "flags" },
+{"num",      "set num",        OFFSET(num),      FF_OPT_TYPE_INT,      {0},              0,        100                 },
+{"toggle",   "set toggle",     OFFSET(toggle),   FF_OPT_TYPE_INT,      {0},              0,        1                   },
+{"rational", "set rational",   OFFSET(rational), FF_OPT_TYPE_RATIONAL, {0},              0,        10                  },
+{"string",   "set string",     OFFSET(string),   FF_OPT_TYPE_STRING,   {0},              CHAR_MIN, CHAR_MAX            },
+{"flags",    "set flags",      OFFSET(flags),    FF_OPT_TYPE_FLAGS,    {0},              0,        INT_MAX, 0, "flags" },
+{"cool",     "set cool flag ", 0,                FF_OPT_TYPE_CONST,    {TEST_FLAG_COOL}, INT_MIN,  INT_MAX, 0, "flags" },
+{"lame",     "set lame flag ", 0,                FF_OPT_TYPE_CONST,    {TEST_FLAG_LAME}, INT_MIN,  INT_MAX, 0, "flags" },
+{"mu",       "set mu flag ",   0,                FF_OPT_TYPE_CONST,    {TEST_FLAG_MU},   INT_MIN,  INT_MAX, 0, "flags" },
 {NULL},
 };
 
@@ -655,7 +654,7 @@ int main(void)
         };
 
         test_ctx.class = &test_class;
-        av_opt_set_defaults2(&test_ctx, 0, 0);
+        av_opt_set_defaults(&test_ctx);
         test_ctx.string = av_strdup("default");
 
         av_log_set_level(AV_LOG_DEBUG);

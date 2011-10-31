@@ -96,14 +96,14 @@ static void decode(RA288Context *ractx, float gain, int cb_coef)
     for (i=0; i < 5; i++)
         buffer[i] = codetable[cb_coef][i] * sumsum;
 
-    sum = ff_dot_productf(buffer, buffer, 5) * ((1<<24)/5.);
+    sum = ff_dot_productf(buffer, buffer, 5);
 
-    sum = FFMAX(sum, 1);
+    sum = FFMAX(sum, 5. / (1<<24));
 
     /* shift and store */
     memmove(gain_block, gain_block + 1, 9 * sizeof(*gain_block));
 
-    gain_block[9] = 10 * log10(sum) - 32;
+    gain_block[9] = 10 * log10(sum) + (10*log10(((1<<24)/5.)) - 32);
 
     ff_celp_lp_synthesis_filterf(block, ractx->sp_lpc, buffer, 5, 36);
 }
@@ -203,15 +203,12 @@ static int ra288_decode_frame(AVCodecContext * avctx, void *data,
     return avctx->block_align;
 }
 
-AVCodec ff_ra_288_decoder =
-{
-    "real_288",
-    AVMEDIA_TYPE_AUDIO,
-    CODEC_ID_RA_288,
-    sizeof(RA288Context),
-    ra288_decode_init,
-    NULL,
-    NULL,
-    ra288_decode_frame,
-    .long_name = NULL_IF_CONFIG_SMALL("RealAudio 2.0 (28.8K)"),
+AVCodec ff_ra_288_decoder = {
+    .name           = "real_288",
+    .type           = AVMEDIA_TYPE_AUDIO,
+    .id             = CODEC_ID_RA_288,
+    .priv_data_size = sizeof(RA288Context),
+    .init           = ra288_decode_init,
+    .decode         = ra288_decode_frame,
+    .long_name      = NULL_IF_CONFIG_SMALL("RealAudio 2.0 (28.8K)"),
 };

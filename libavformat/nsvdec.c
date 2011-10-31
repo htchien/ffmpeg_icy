@@ -18,6 +18,8 @@
  * License along with FFmpeg; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+
+#include "libavutil/mathematics.h"
 #include "avformat.h"
 #include "riff.h"
 #include "libavutil/dict.h"
@@ -701,7 +703,9 @@ static int nsv_read_seek(AVFormatContext *s, int stream_index, int64_t timestamp
     if(index < 0)
         return -1;
 
-    avio_seek(s->pb, st->index_entries[index].pos, SEEK_SET);
+    if (avio_seek(s->pb, st->index_entries[index].pos, SEEK_SET) < 0)
+        return -1;
+
     nst->frame_offset = st->index_entries[index].timestamp;
     nsv->state = NSV_UNSYNC;
     return 0;
@@ -768,12 +772,12 @@ static int nsv_probe(AVProbeData *p)
 }
 
 AVInputFormat ff_nsv_demuxer = {
-    "nsv",
-    NULL_IF_CONFIG_SMALL("Nullsoft Streaming Video"),
-    sizeof(NSVContext),
-    nsv_probe,
-    nsv_read_header,
-    nsv_read_packet,
-    nsv_read_close,
-    nsv_read_seek,
+    .name           = "nsv",
+    .long_name      = NULL_IF_CONFIG_SMALL("Nullsoft Streaming Video"),
+    .priv_data_size = sizeof(NSVContext),
+    .read_probe     = nsv_probe,
+    .read_header    = nsv_read_header,
+    .read_packet    = nsv_read_packet,
+    .read_close     = nsv_read_close,
+    .read_seek      = nsv_read_seek,
 };

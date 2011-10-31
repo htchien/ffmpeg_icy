@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "libavutil/crc.h"
+#include "libavutil/opt.h"
 #include "internal.h"
 #include "aac_ac3_parser.h"
 #include "ac3_parser.h"
@@ -174,6 +175,11 @@ static av_cold int ac3_decode_init(AVCodecContext *avctx)
 {
     AC3DecodeContext *s = avctx->priv_data;
     s->avctx = avctx;
+
+#if FF_API_DRC_SCALE
+    if (avctx->drc_scale)
+        s->drc_scale = avctx->drc_scale;
+#endif
 
     ff_ac3_common_init();
     ac3_tables_init();
@@ -787,7 +793,7 @@ static int decode_audio_block(AC3DecodeContext *s, int blk)
     do {
         if(get_bits1(gbc)) {
             s->dynamic_range[i] = ((dynamic_range_tab[get_bits(gbc, 8)]-1.0) *
-                                  s->avctx->drc_scale)+1.0;
+                                  s->drc_scale)+1.0;
         } else if(blk == 0) {
             s->dynamic_range[i] = 1.0f;
         }
@@ -1381,6 +1387,10 @@ static int ac3_decode_frame(AVCodecContext * avctx, void *data, int *data_size,
         avctx->channels = s->out_channels;
         avctx->channel_layout = s->channel_layout;
 
+        s->loro_center_mix_level   = gain_levels[  center_levels[s->  center_mix_level]];
+        s->loro_surround_mix_level = gain_levels[surround_levels[s->surround_mix_level]];
+        s->ltrt_center_mix_level   = LEVEL_MINUS_3DB;
+        s->ltrt_surround_mix_level = LEVEL_MINUS_3DB;
         /* set downmixing coefficients if needed */
         if(s->channels != s->out_channels && !((s->output_mode & AC3_OUTPUT_LFEON) &&
                 s->fbw_channels == s->out_channels)) {
@@ -1438,6 +1448,27 @@ static av_cold int ac3_decode_end(AVCodecContext *avctx)
     return 0;
 }
 
+#define OFFSET(x) offsetof(AC3DecodeContext, x)
+#define PAR (AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_AUDIO_PARAM)
+static const AVOption options[] = {
+    { "drc_scale", "percentage of dynamic range compression to apply", OFFSET(drc_scale), FF_OPT_TYPE_FLOAT, {1.0}, 0.0, 1.0, PAR },
+
+{"dmix_mode", "Preferred Stereo Downmix Mode", OFFSET(preferred_stereo_downmix), FF_OPT_TYPE_INT, {.dbl = -1 }, -1, 2, 0, "dmix_mode"},
+{"ltrt_cmixlev",   "Lt/Rt Center Mix Level",   OFFSET(ltrt_center_mix_level),    FF_OPT_TYPE_FLOAT, {.dbl = -1.0 }, -1.0, 2.0, 0},
+{"ltrt_surmixlev", "Lt/Rt Surround Mix Level", OFFSET(ltrt_surround_mix_level),  FF_OPT_TYPE_FLOAT, {.dbl = -1.0 }, -1.0, 2.0, 0},
+{"loro_cmixlev",   "Lo/Ro Center Mix Level",   OFFSET(loro_center_mix_level),    FF_OPT_TYPE_FLOAT, {.dbl = -1.0 }, -1.0, 2.0, 0},
+{"loro_surmixlev", "Lo/Ro Surround Mix Level", OFFSET(loro_surround_mix_level),  FF_OPT_TYPE_FLOAT, {.dbl = -1.0 }, -1.0, 2.0, 0},
+
+    { NULL},
+};
+
+static const AVClass ac3_decoder_class = {
+    .class_name = "(E-)AC3 decoder",
+    .item_name  = av_default_item_name,
+    .option     = options,
+    .version    = LIBAVUTIL_VERSION_INT,
+};
+
 AVCodec ff_ac3_decoder = {
     .name = "ac3",
     .type = AVMEDIA_TYPE_AUDIO,
@@ -1450,6 +1481,7 @@ AVCodec ff_ac3_decoder = {
     .sample_fmts = (const enum AVSampleFormat[]) {
         AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE
     },
+    .priv_class = &ac3_decoder_class,
 };
 
 #if CONFIG_EAC3_DECODER
@@ -1465,5 +1497,6 @@ AVCodec ff_eac3_decoder = {
     .sample_fmts = (const enum AVSampleFormat[]) {
         AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE
     },
+    .priv_class = &ac3_decoder_class,
 };
 #endif
